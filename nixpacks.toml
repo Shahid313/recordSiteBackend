@@ -1,0 +1,5 @@
+[phases.setup]
+aptPkgs = ["...", "libgl1", "libglib2.0-0"]
+
+[start]
+cmd = "celery -A app.workers.video_tasks worker --loglevel=info"
