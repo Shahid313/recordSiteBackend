@@ -1,2 +1,2 @@
 [phases.setup]
-nixPkgs = ["python311", "libGL", "glib"]
+nixPkgs = ["python311"]
