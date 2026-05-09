@@ -93,8 +93,8 @@ def login(
         httponly=True,
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         expires=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        samesite="lax",
-        secure=False  # Set to True in production with HTTPS
+        samesite=settings.COOKIE_SAMESITE,
+        secure=settings.COOKIE_SECURE,
     )
     
     return {"access_token": access_token, "token_type": "bearer"}
@@ -104,7 +104,13 @@ def logout(response: Response):
     """
     Logout user by clearing cookie
     """
-    response.delete_cookie(key="access_token")
+    # Must match the attributes used when setting the cookie, otherwise
+    # browsers won't clear it cross-site.
+    response.delete_cookie(
+        key="access_token",
+        samesite=settings.COOKIE_SAMESITE,
+        secure=settings.COOKIE_SECURE,
+    )
     return {"message": "Successfully logged out"}
 
 @router.get("/me", response_model=UserResponse)

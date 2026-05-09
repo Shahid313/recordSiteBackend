@@ -28,10 +28,21 @@ class Settings(BaseSettings):
     # Upload / processing limits
     MAX_VIDEO_SIZE_BYTES: int = int(os.getenv("MAX_VIDEO_SIZE_BYTES", str(2 * 1024 * 1024 * 1024)))  # 2GB
     FRAME_EXTRACTION_INTERVAL_SECONDS: int = int(os.getenv("FRAME_EXTRACTION_INTERVAL_SECONDS", "1"))
-    
-    # CORS
-    BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:5173"]
-    
+
+    # Cookie / auth behavior. In production with frontend on a different domain,
+    # the browser requires SameSite=None and Secure=True for cross-site cookies.
+    COOKIE_SECURE: bool = os.getenv("COOKIE_SECURE", "false").lower() == "true"
+    COOKIE_SAMESITE: str = os.getenv("COOKIE_SAMESITE", "lax")  # "lax" for dev, "none" for cross-site prod
+
+    # CORS — comma-separated list of allowed origins, e.g.
+    # BACKEND_CORS_ORIGINS="https://your-frontend.up.railway.app,http://localhost:5173"
+    BACKEND_CORS_ORIGINS: List[str] = [
+        o.strip() for o in os.getenv(
+            "BACKEND_CORS_ORIGINS",
+            "http://localhost:3000,http://localhost:5173",
+        ).split(",") if o.strip()
+    ]
+
     class Config:
         case_sensitive = True
 
