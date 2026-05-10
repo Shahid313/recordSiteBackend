@@ -7,7 +7,7 @@ import app.db.models  # noqa: F401  (ensure all mappers are registered in worker
 
 def _broker_url() -> str:
     # Prefer runtime environment variable if present.
-    return os.getenv("REDIS_URL", settings.REDIS_URL)
+    return os.getenv(settings.REDIS_URL, settings.REDIS_URL)
 
 
 celery_app = Celery(
