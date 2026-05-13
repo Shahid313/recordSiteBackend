@@ -47,17 +47,19 @@ def upload_avatar(
     ts = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     avatar_rel = f"{current_user.id}/avatar_{ts}{ext}"
 
-    # Write to a temp file and then store via storage service
-    tmp_path = storage.get_file_path("avatars", f"{current_user.id}/._tmp_{ts}{ext}")
-    os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
-    with open(tmp_path, "wb") as f:
-        f.write(content)
-
-    storage.upload_file("avatars", avatar_rel, tmp_path, content_type=file.content_type)
+    # Write the upload to a real temp file, then hand it to the storage service.
+    # (Don't ask storage for a path to write to — that doesn't work for object stores.)
+    import tempfile
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=ext)
     try:
-        os.remove(tmp_path)
-    except OSError:
-        pass
+        with os.fdopen(tmp_fd, "wb") as f:
+            f.write(content)
+        storage.upload_file("avatars", avatar_rel, tmp_path, content_type=file.content_type)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
 
     profile = db.query(UserProfile).filter(UserProfile.user_id == current_user.id).first()
     if not profile:
