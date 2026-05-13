@@ -5,15 +5,10 @@ from app.core.config import settings
 import app.db.models  # noqa: F401  (ensure all mappers are registered in worker process)
 
 
-def _broker_url() -> str:
-    # Prefer runtime environment variable if present.
-    return os.getenv(settings.REDIS_URL, "redis://default:cloEOrTpehwNcXRCYgmnCYhvSaaKzlht@redis.railway.internal:6379")
-
-
 celery_app = Celery(
     "constellation",
-    broker=_broker_url(),
-    backend=_broker_url(),
+    broker=settings.REDIS_URL,
+    backend=settings.REDIS_URL,
     include=["app.workers.video_tasks"],
 )
 

@@ -40,7 +40,9 @@ def process_video_task(self, video_id: int) -> None:
         db.commit()
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            logger.info("Downloading video from storage: %s / %s", "videos", video.storage_path)
             local_video_path = storage.get_file_path("videos", video.storage_path)
+            logger.info("Video downloaded to: %s (exists=%s)", local_video_path, os.path.exists(local_video_path))
 
             # Metadata
             meta = video_processor.get_metadata(local_video_path)
