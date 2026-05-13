@@ -25,6 +25,17 @@ class ExtractedFrame:
 
 class VideoProcessor:
     def get_metadata(self, video_path: str) -> VideoMetadata:
+        # Surface a clearer error before handing off to OpenCV, since
+        # cv2.VideoCapture says "Unable to open video" for *any* failure
+        # (including a missing file).
+        import os
+        if not os.path.exists(video_path):
+            raise FileNotFoundError(
+                f"Video file not found at '{video_path}'. "
+                "If you are running web and worker as separate Railway services, "
+                "they do not share a filesystem — uploads must go to shared "
+                "object storage (S3/MinIO) instead of the local disk."
+            )
         cap = cv2.VideoCapture(video_path)
         try:
             if not cap.isOpened():
