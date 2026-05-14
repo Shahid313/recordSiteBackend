@@ -1,7 +1,7 @@
 import mimetypes
 import os
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse, RedirectResponse
 
 from app.api.deps import get_current_user
@@ -16,6 +16,7 @@ router = APIRouter()
 def get_file(
     category: str,
     filename: str,
+    proxy: bool = Query(False),
     current_user: User = Depends(get_current_user),
 ):
     """
@@ -30,7 +31,7 @@ def get_file(
         public_url = storage.get_public_url(category, filename)
     except ValueError:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid file path")
-    if public_url:
+    if public_url and not proxy:
         return RedirectResponse(url=public_url, status_code=302)
 
     try:
