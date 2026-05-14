@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Up
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.api.permissions import require_project_edit, require_project_view
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.user import User
@@ -41,9 +42,7 @@ def upload_video(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project or project.owner_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    project = require_project_edit(db, project_id, current_user)
 
     if not file.filename:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing filename")
@@ -127,9 +126,7 @@ def get_video_status(
     if not video:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
 
-    project = db.query(Project).filter(Project.id == video.project_id).first()
-    if not project or project.owner_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+    require_project_view(db, video.project_id, current_user)
 
     processed_frames = db.query(Panorama).filter(Panorama.video_id == video.id).count()
     total_frames: Optional[int] = int(video.duration) if video.duration else None
@@ -204,9 +201,7 @@ def list_video_panoramas(
     if not video:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
 
-    project = db.query(Project).filter(Project.id == video.project_id).first()
-    if not project or project.owner_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+    require_project_view(db, video.project_id, current_user)
 
     panoramas = (
         db.query(Panorama)
@@ -246,14 +241,7 @@ def delete_video(
     if not video:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
 
-    project = db.query(Project).filter(Project.id == video.project_id).first()
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
-
-    is_owner = project.owner_id == current_user.id
-    is_admin = getattr(current_user, "is_superuser", False)
-    if not (is_owner or is_admin):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not allowed")
+    require_project_edit(db, video.project_id, current_user)
 
     # Delete stored files (video + frames + thumbnails)
     try:

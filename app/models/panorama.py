@@ -33,5 +33,6 @@ class Panorama(Base):
     project = relationship("Project", back_populates="panoramas")
     video = relationship("Video", back_populates="panoramas")
     floorplan = relationship("Floorplan", back_populates="panoramas", foreign_keys=[floor_id])
+    comments = relationship("PanoramaComment", back_populates="panorama", cascade="all, delete-orphan")
 
 

@@ -18,5 +18,7 @@ class Project(Base):
     videos = relationship("Video", back_populates="project", cascade="all, delete-orphan")
     panoramas = relationship("Panorama", back_populates="project", cascade="all, delete-orphan")
     floorplans = relationship("Floorplan", back_populates="project", cascade="all, delete-orphan")
+    collaborators = relationship("ProjectCollaborator", back_populates="project", cascade="all, delete-orphan")
+    comments = relationship("PanoramaComment", back_populates="project", cascade="all, delete-orphan")
 
 

@@ -16,6 +16,7 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.api.permissions import require_project_edit, require_project_view
 from app.db.session import get_db
 from app.models.connection import Connection
 from app.models.edit_history import EditHistory
@@ -66,12 +67,7 @@ class ConnectionPatch(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _own_project(db: Session, project_id: int, user: User) -> Project:
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-    if project.owner_id != user.id and not user.is_superuser:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
-    return project
+    return require_project_edit(db, project_id, user)
 
 
 def _own_pano(db: Session, pano_id: int, user: User) -> Panorama:
@@ -81,8 +77,7 @@ def _own_pano(db: Session, pano_id: int, user: User) -> Panorama:
     project = db.query(Project).filter(Project.id == pano.project_id).first()
     if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panorama not found")
-    if project.owner_id != user.id and not user.is_superuser:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panorama not found")
+    require_project_edit(db, project.id, user)
     return pano
 
 
@@ -305,7 +300,7 @@ def get_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
-    _own_project(db, project_id, current_user)
+    require_project_view(db, project_id, current_user)
 
     rows = (
         db.query(EditHistory)

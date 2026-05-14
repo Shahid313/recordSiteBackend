@@ -20,6 +20,7 @@ class ProjectUpdate(BaseModel):
 class ProjectResponse(ProjectBase):
     id: int
     owner_id: int
+    access_role: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

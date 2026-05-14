@@ -8,6 +8,7 @@ from app.api.v1.endpoints import constellation
 from app.api.v1.endpoints import panoramas
 from app.api.v1.endpoints import editing
 from app.api.v1.endpoints import floorplans
+from app.api.v1.endpoints import collaboration
 
 api_router = APIRouter()
 
@@ -21,3 +22,4 @@ api_router.include_router(constellation.router, tags=["constellation"])
 api_router.include_router(panoramas.router, tags=["panoramas"])
 api_router.include_router(editing.router, tags=["editing"])
 api_router.include_router(floorplans.router, tags=["floorplans"])
+api_router.include_router(collaboration.router, tags=["collaboration"])

@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.api.permissions import require_project_edit, require_project_view
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.floorplan import Floorplan
@@ -24,9 +25,11 @@ MAX_FLOORPLAN_SIZE = 20 * 1024 * 1024  # 20 MB
 
 
 def _own_project(db: Session, project_id: int, user: User) -> Project:
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project or project.owner_id != user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    return require_project_edit(db, project_id, user)
+
+
+def _view_project(db: Session, project_id: int, user: User) -> Project:
+    project, _role = require_project_view(db, project_id, user)
     return project
 
 
@@ -35,8 +38,9 @@ def _own_floorplan(db: Session, floorplan_id: int, user: User) -> Floorplan:
     if not fp:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Floorplan not found")
     project = db.query(Project).filter(Project.id == fp.project_id).first()
-    if not project or project.owner_id != user.id:
+    if not project:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Floorplan not found")
+    require_project_edit(db, project.id, user)
     return fp
 
 
@@ -140,7 +144,7 @@ def list_floorplans(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
-    _own_project(db, project_id, current_user)
+    _view_project(db, project_id, current_user)
     fps = (
         db.query(Floorplan)
         .filter(Floorplan.project_id == project_id)
@@ -253,8 +257,9 @@ def set_transition(
     if not pano:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panorama not found")
     proj = db.query(Project).filter(Project.id == pano.project_id).first()
-    if not proj or proj.owner_id != current_user.id:
+    if not proj:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panorama not found")
+    require_project_edit(db, proj.id, current_user)
 
     pano.is_transition = bool(body.get("is_transition", False))
     if pano.is_transition:
@@ -292,7 +297,7 @@ def get_floor_assignments(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
-    _own_project(db, project_id, current_user)
+    _view_project(db, project_id, current_user)
     panos = db.query(Panorama).filter(Panorama.project_id == project_id).all()
     return [
         {

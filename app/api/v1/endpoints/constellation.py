@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.api.permissions import require_project_view
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.user import User
@@ -21,9 +22,7 @@ def get_project_constellation(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project or project.owner_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    project, _role = require_project_view(db, project_id, current_user)
 
     # Default to the most recent non-failed video
     video = (

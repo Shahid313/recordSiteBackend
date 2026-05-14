@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.api.permissions import require_project_view
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.connection import Connection
@@ -47,9 +48,7 @@ def get_panorama_details(
     if not pano:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panorama not found")
 
-    project = db.query(Project).filter(Project.id == pano.project_id).first()
-    if not project or project.owner_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Panorama not found")
+    require_project_view(db, pano.project_id, current_user)
 
     base = ""
     image_url = base + f"{settings.API_V1_STR}/files/panoramas/{pano.storage_path}"
@@ -119,9 +118,7 @@ def get_tour_data(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project or project.owner_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    project, role = require_project_view(db, project_id, current_user)
 
     video = (
         db.query(Video)
@@ -208,7 +205,7 @@ def get_tour_data(
     return {
         "panoramas": pano_payload,
         "connections": conn_payload,
-        "metadata": {"total": len(panos), "start_pano_id": start_pano_id, "video_id": video.id},
+        "metadata": {"total": len(panos), "start_pano_id": start_pano_id, "video_id": video.id, "access_role": role},
         "floorplans": floorplan_payload,
     }
 

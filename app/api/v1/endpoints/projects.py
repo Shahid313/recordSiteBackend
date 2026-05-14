@@ -2,7 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.api.permissions import get_project_role, require_project_edit, require_project_owner, require_project_view
 from app.db.session import get_db
+from app.models.project_collaborator import ProjectCollaborator
 from app.models.user import User
 from app.models.project import Project
 from app.models.video import Video
@@ -35,12 +37,17 @@ def list_projects(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return (
+    projects = (
         db.query(Project)
-        .filter(Project.owner_id == current_user.id)
+        .outerjoin(ProjectCollaborator, ProjectCollaborator.project_id == Project.id)
+        .filter((Project.owner_id == current_user.id) | (ProjectCollaborator.user_id == current_user.id))
+        .distinct()
         .order_by(Project.updated_at.desc())
         .all()
     )
+    for project in projects:
+        project.access_role = get_project_role(db, project, current_user)
+    return projects
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
@@ -49,9 +56,8 @@ def get_project(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project or project.owner_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    project, role = require_project_view(db, project_id, current_user)
+    project.access_role = role
     return project
 
 
@@ -62,9 +68,7 @@ def update_project(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project or project.owner_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    project = require_project_edit(db, project_id, current_user)
 
     data = project_in.model_dump(exclude_unset=True)
     for k, v in data.items():
@@ -80,9 +84,7 @@ def delete_project(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project or project.owner_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    project = require_project_owner(db, project_id, current_user)
 
     db.delete(project)
     db.commit()
@@ -95,9 +97,7 @@ def list_project_videos(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    project = db.query(Project).filter(Project.id == project_id).first()
-    if not project or project.owner_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    project, _role = require_project_view(db, project_id, current_user)
 
     videos = (
         db.query(Video)
