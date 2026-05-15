@@ -11,6 +11,8 @@ from app.services.storage import storage
 
 router = APIRouter()
 
+CACHE_HEADERS = {"Cache-Control": "private, max-age=86400"}
+
 
 @router.get("/{category}/{filename:path}")
 def get_file(
@@ -32,7 +34,7 @@ def get_file(
     except ValueError:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid file path")
     if public_url and not proxy:
-        return RedirectResponse(url=public_url, status_code=302)
+        return RedirectResponse(url=public_url, status_code=302, headers=CACHE_HEADERS)
 
     try:
         abs_path = storage.get_file_path(category, filename)
@@ -43,6 +45,6 @@ def get_file(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
     media_type, _enc = mimetypes.guess_type(abs_path)
-    return FileResponse(path=abs_path, media_type=media_type or "application/octet-stream")
+    return FileResponse(path=abs_path, media_type=media_type or "application/octet-stream", headers=CACHE_HEADERS)
 
 

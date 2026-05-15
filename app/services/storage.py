@@ -140,6 +140,9 @@ class R2StorageService:
         extra = {"ContentType": content_type} if content_type else {}
         try:
             self._client.upload_file(file_path, self.bucket, key, ExtraArgs=extra)
+            cached = self._tmp_root / category / filename
+            if cached.exists():
+                cached.unlink()
         except Exception as e:
             logger.exception("R2 upload failed for %s: %s", key, e)
             raise
@@ -151,6 +154,8 @@ class R2StorageService:
         key = _normalize_key(category, filename)
         local = self._tmp_root / category / filename
         local.parent.mkdir(parents=True, exist_ok=True)
+        if local.exists() and local.stat().st_size > 0:
+            return str(local)
         try:
             self._client.download_file(self.bucket, key, str(local))
         except Exception as e:
@@ -162,6 +167,9 @@ class R2StorageService:
         key = _normalize_key(category, filename)
         try:
             self._client.delete_object(Bucket=self.bucket, Key=key)
+            cached = self._tmp_root / category / filename
+            if cached.exists():
+                cached.unlink()
         except Exception as e:
             logger.exception("R2 delete failed for %s: %s", key, e)
             raise
