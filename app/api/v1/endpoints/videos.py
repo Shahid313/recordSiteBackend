@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.api.permissions import require_project_edit, require_project_view
 from app.core.config import settings
+from app.db.session import SessionLocal
 from app.db.session import get_db
 from app.models.user import User
 from app.models.video import Video, VideoStatus
@@ -17,7 +18,6 @@ from app.schemas.panorama import PanoramaResponse
 from app.services.storage import storage
 from app.services.storage_cleanup import build_video_cleanup_plan, cleanup_storage_plan
 from app.workers.video_tasks import process_video_task
-from app.workers.celery_app import celery_app
 
 
 router = APIRouter()
@@ -32,6 +32,20 @@ def _validate_extension(filename: str) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unsupported video format. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
         )
+
+
+def _enqueue_video_processing(video_id: int) -> None:
+    db = SessionLocal()
+    try:
+        process_video_task.delay(video_id)
+    except Exception as exc:
+        video = db.query(Video).filter(Video.id == video_id).first()
+        if video:
+            video.status = VideoStatus.FAILED.value
+            video.error_message = f"Failed to enqueue processing task: {exc}"
+            db.commit()
+    finally:
+        db.close()
 
 
 @router.post("/upload/{project_id}", response_model=VideoUploadResponse, status_code=status.HTTP_201_CREATED)
@@ -92,21 +106,7 @@ def upload_video(
             db.commit()
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to store video") from e
 
-        # Enqueue Celery processing (enqueue immediately so failures surface to the user)
-        try:
-            # Ensure a worker is actually running; otherwise videos will sit in UPLOADED forever.
-            replies = celery_app.control.ping(timeout=1.0)
-            if not replies:
-                raise RuntimeError("No Celery workers available (start a worker with --pool=solo on Windows).")
-            process_video_task.delay(video.id)
-        except Exception as e:
-            video.status = VideoStatus.FAILED.value
-            video.error_message = f"Failed to enqueue processing task: {e}"
-            db.commit()
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Background processing is not running. Start Redis + a Celery worker, then retry upload.",
-            ) from e
+        background_tasks.add_task(_enqueue_video_processing, video.id)
 
         return VideoUploadResponse(video_id=video.id, status=video.status)
     finally:
