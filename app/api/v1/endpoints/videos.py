@@ -10,12 +10,12 @@ from app.api.permissions import require_project_edit, require_project_view
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.user import User
-from app.models.project import Project
 from app.models.video import Video, VideoStatus
 from app.models.panorama import Panorama
 from app.schemas.video import VideoUploadResponse, VideoStatusResponse
 from app.schemas.panorama import PanoramaResponse
 from app.services.storage import storage
+from app.services.storage_cleanup import StorageCleanupError, cleanup_video_storage
 from app.workers.video_tasks import process_video_task
 from app.workers.celery_app import celery_app
 
@@ -243,21 +243,13 @@ def delete_video(
 
     require_project_edit(db, video.project_id, current_user)
 
-    # Delete stored files (video + frames + thumbnails)
     try:
-        storage.delete_file("videos", video.storage_path)
-    except Exception:
-        # Keep going; DB delete is still desired
-        pass
-
-    prefix = f"{video.project_id}/{video.id}"
-    for cat in ["panoramas", "thumbnails"]:
-        try:
-            files = storage.list_files(cat, prefix=prefix)
-            for f in files:
-                storage.delete_file(cat, f)
-        except Exception:
-            pass
+        cleanup_video_storage(db, video)
+    except StorageCleanupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete one or more stored video files. Database rows were not deleted.",
+        ) from exc
 
     db.delete(video)
     db.commit()

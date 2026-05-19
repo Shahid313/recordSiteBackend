@@ -10,6 +10,7 @@ from app.models.project import Project
 from app.models.video import Video
 from app.schemas.project import ProjectCreate, ProjectResponse, ProjectUpdate
 from app.schemas.video import VideoStatusResponse
+from app.services.storage_cleanup import StorageCleanupError, cleanup_project_storage
 
 
 router = APIRouter()
@@ -85,6 +86,14 @@ def delete_project(
     current_user: User = Depends(get_current_user),
 ):
     project = require_project_owner(db, project_id, current_user)
+
+    try:
+        cleanup_project_storage(db, project.id)
+    except StorageCleanupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete one or more stored project files. Database rows were not deleted.",
+        ) from exc
 
     db.delete(project)
     db.commit()
