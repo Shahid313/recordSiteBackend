@@ -15,7 +15,7 @@ from app.models.panorama import Panorama
 from app.schemas.video import VideoUploadResponse, VideoStatusResponse
 from app.schemas.panorama import PanoramaResponse
 from app.services.storage import storage
-from app.services.storage_cleanup import StorageCleanupError, cleanup_video_storage
+from app.services.storage_cleanup import build_video_cleanup_plan, cleanup_storage_plan
 from app.workers.video_tasks import process_video_task
 from app.workers.celery_app import celery_app
 
@@ -234,25 +234,20 @@ def list_video_panoramas(
 @router.delete("/{video_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_video(
     video_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     video = db.query(Video).filter(Video.id == video_id).first()
     if not video:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found")
+        return None
 
     require_project_edit(db, video.project_id, current_user)
 
-    try:
-        cleanup_video_storage(db, video)
-    except StorageCleanupError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to delete one or more stored video files. Database rows were not deleted.",
-        ) from exc
-
+    cleanup_plan = build_video_cleanup_plan(db, video)
     db.delete(video)
     db.commit()
+    background_tasks.add_task(cleanup_storage_plan, cleanup_plan)
     return None
 
 

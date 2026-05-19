@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
@@ -12,6 +13,12 @@ logger = logging.getLogger(__name__)
 
 class StorageCleanupError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class StorageCleanupPlan:
+    objects: tuple[tuple[str, str], ...]
+    prefixes: tuple[tuple[str, str], ...] = ()
 
 
 def _delete_object(category: str, path: str | None, deleted: set[tuple[str, str]], errors: list[str]) -> None:
@@ -40,6 +47,62 @@ def _delete_prefix(category: str, prefix: str, deleted: set[tuple[str, str]]) ->
             _delete_object(category, path, deleted, [])
         except Exception:
             logger.exception("Failed best-effort prefix cleanup for %s/%s", category, path)
+
+
+def cleanup_storage_plan(plan: StorageCleanupPlan) -> None:
+    deleted: set[tuple[str, str]] = set()
+    errors: list[str] = []
+
+    for category, path in plan.objects:
+        _delete_object(category, path, deleted, errors)
+
+    for category, prefix in plan.prefixes:
+        _delete_prefix(category, prefix, deleted)
+
+    if errors:
+        logger.error("Storage cleanup finished with errors: %s", "; ".join(errors))
+
+
+def build_video_cleanup_plan(db: Session, video: Video) -> StorageCleanupPlan:
+    objects: list[tuple[str, str]] = []
+    prefixes: list[tuple[str, str]] = []
+
+    if video.storage_path:
+        objects.append(("videos", video.storage_path))
+
+    panoramas = db.query(Panorama).filter(Panorama.video_id == video.id).all()
+    for pano in panoramas:
+        if pano.storage_path:
+            objects.append(("panoramas", pano.storage_path))
+        if pano.thumbnail_path:
+            objects.append(("thumbnails", pano.thumbnail_path))
+
+    prefix = f"{video.project_id}/{video.id}/"
+    prefixes.append(("panoramas", prefix))
+    prefixes.append(("thumbnails", prefix))
+
+    return StorageCleanupPlan(objects=tuple(objects), prefixes=tuple(prefixes))
+
+
+def build_project_cleanup_plan(db: Session, project_id: int) -> StorageCleanupPlan:
+    objects: list[tuple[str, str]] = []
+    prefixes: list[tuple[str, str]] = []
+
+    for video in db.query(Video).filter(Video.project_id == project_id).all():
+        video_plan = build_video_cleanup_plan(db, video)
+        objects.extend(video_plan.objects)
+        prefixes.extend(video_plan.prefixes)
+
+    for floorplan in db.query(Floorplan).filter(Floorplan.project_id == project_id).all():
+        if floorplan.image_path:
+            objects.append(("floorplans", floorplan.image_path))
+        if floorplan.thumbnail_path:
+            objects.append(("floorplans", floorplan.thumbnail_path))
+
+    for category in ("videos", "panoramas", "thumbnails", "floorplans", "exports"):
+        prefixes.append((category, f"{project_id}/"))
+
+    return StorageCleanupPlan(objects=tuple(dict.fromkeys(objects)), prefixes=tuple(dict.fromkeys(prefixes)))
 
 
 def cleanup_video_storage(db: Session, video: Video, deleted: set[tuple[str, str]] | None = None) -> None:

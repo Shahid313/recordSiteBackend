@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
-from app.api.permissions import get_project_role, require_project_edit, require_project_owner, require_project_view
+from app.api.permissions import get_project_role, require_project_edit, require_project_view
 from app.db.session import get_db
 from app.models.project_collaborator import ProjectCollaborator
 from app.models.user import User
@@ -10,7 +10,7 @@ from app.models.project import Project
 from app.models.video import Video
 from app.schemas.project import ProjectCreate, ProjectResponse, ProjectUpdate
 from app.schemas.video import VideoStatusResponse
-from app.services.storage_cleanup import StorageCleanupError, cleanup_project_storage
+from app.services.storage_cleanup import build_project_cleanup_plan, cleanup_storage_plan
 
 
 router = APIRouter()
@@ -82,21 +82,20 @@ def update_project(
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_project(
     project_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    project = require_project_owner(db, project_id, current_user)
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        return None
+    if project.owner_id != current_user.id and not getattr(current_user, "is_superuser", False):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Project owner access required")
 
-    try:
-        cleanup_project_storage(db, project.id)
-    except StorageCleanupError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to delete one or more stored project files. Database rows were not deleted.",
-        ) from exc
-
+    cleanup_plan = build_project_cleanup_plan(db, project.id)
     db.delete(project)
     db.commit()
+    background_tasks.add_task(cleanup_storage_plan, cleanup_plan)
     return None
 
 
