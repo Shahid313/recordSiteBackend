@@ -137,12 +137,16 @@ def get_video_status(
             progress_percent = min(50.0, (processed_frames / total_frames) * 50.0)
         else:
             progress_percent = None
+    elif video.status == VideoStatus.EXTRACTING_IMU.value:
+        progress_percent = 55.0
     elif video.status == VideoStatus.PROCESSING_SFM.value:
         positioned = db.query(Panorama).filter(Panorama.video_id == video.id, Panorama.position_x.isnot(None)).count()
         if total_frames and total_frames > 0:
             progress_percent = 50.0 + min(40.0, (positioned / total_frames) * 40.0)
         else:
             progress_percent = 70.0 if positioned > 0 else 55.0
+    elif video.status == VideoStatus.FUSING_SENSORS.value:
+        progress_percent = 85.0
     elif video.status == VideoStatus.COMPLETED.value:
         progress_percent = 100.0
     elif video.status == VideoStatus.FAILED.value:

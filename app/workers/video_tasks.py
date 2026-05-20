@@ -1,7 +1,9 @@
 import logging
 import os
+import json
 import tempfile
 from datetime import datetime
+from typing import Dict, List
 
 from sqlalchemy.orm import Session
 
@@ -12,10 +14,91 @@ from app.models.connection import Connection
 from app.services.storage import storage
 from app.services.video_processor import video_processor
 from app.services.sfm_processor import sfm_processor
+from app.services.imu_extractor import imu_extractor
+from app.services.imu_processor import imu_processor
+from app.services.sensor_fusion import sensor_fusion
 from app.core.config import settings
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+
+def _build_sfm_positions(db: Session, video_id: int, used_fallback: bool) -> List[Dict]:
+    panos: List[Panorama] = (
+        db.query(Panorama)
+        .filter(Panorama.video_id == video_id)
+        .order_by(Panorama.frame_number.asc())
+        .all()
+    )
+    pano_ids = [p.id for p in panos]
+    confidence_by_pano: Dict[int, float] = {}
+    if pano_ids:
+        conns = (
+            db.query(Connection)
+            .filter(Connection.from_pano_id.in_(pano_ids), Connection.to_pano_id.in_(pano_ids))
+            .all()
+        )
+        for conn in conns:
+            confidence_by_pano[conn.from_pano_id] = max(confidence_by_pano.get(conn.from_pano_id, 0.0), float(conn.confidence))
+            confidence_by_pano[conn.to_pano_id] = max(confidence_by_pano.get(conn.to_pano_id, 0.0), float(conn.confidence))
+
+    default_confidence = 0.35 if used_fallback else 0.75
+    return [
+        {
+            "id": p.id,
+            "frame_number": p.frame_number,
+            "timestamp": float(p.timestamp),
+            "x": float(p.position_x or 0.0),
+            "y": float(p.position_y or 0.0),
+            "orientation": float(p.orientation or 0.0),
+            "confidence": confidence_by_pano.get(p.id, default_confidence),
+        }
+        for p in panos
+    ]
+
+
+def _apply_fused_positions(db: Session, video_id: int, fused_positions: List[Dict]) -> None:
+    panos: List[Panorama] = (
+        db.query(Panorama)
+        .filter(Panorama.video_id == video_id)
+        .order_by(Panorama.frame_number.asc())
+        .all()
+    )
+    for idx, pano in enumerate(panos):
+        if idx >= len(fused_positions):
+            break
+        pos = fused_positions[idx]
+        pano.position_x = float(pos["x"])
+        pano.position_y = float(pos["y"])
+        pano.orientation = float(pos.get("orientation", pano.orientation or 0.0))
+    db.commit()
+
+
+def _write_positioning_comparison(
+    project_id: int,
+    video_id: int,
+    sfm_positions: List[Dict],
+    imu_positions: List[Dict],
+    fused_positions: List[Dict],
+) -> None:
+    payload = {
+        "video_id": video_id,
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "sfm_only": sfm_positions,
+        "imu_only": imu_positions,
+        "fused": fused_positions,
+    }
+    object_key = f"{project_id}/{video_id}/positioning_comparison.json"
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+        tmp_path = tmp.name
+        json.dump(payload, tmp)
+    try:
+        storage.upload_file("exports", object_key, tmp_path, content_type="application/json")
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
 
 
 @celery_app.task(name="process_video_task", bind=True)
@@ -99,9 +182,18 @@ def process_video_task(self, video_id: int) -> None:
                 db.add_all(batch)
                 db.commit()
 
-        # Phase 2: SfM / spatial linking
+        # Phase 2: hybrid IMU + SfM positioning
+        video.status = VideoStatus.EXTRACTING_IMU.value
+        db.commit()
+        self.update_state(state="PROGRESS", meta={"stage": "extracting_imu", "progress": 55})
+
+        imu_data = imu_extractor.extract_imu_data(local_video_path)
+        fps = float(video.fps or 30.0)
+        imu_positions_full = imu_processor.calculate_positions_from_imu(imu_data, frame_rate=fps) if imu_data else []
+
         video.status = VideoStatus.PROCESSING_SFM.value
         db.commit()
+        self.update_state(state="PROGRESS", meta={"stage": "processing_sfm", "progress": 65})
 
         # Clear existing auto connections for this video; processor also does this, but keep here for safety.
         pano_ids = [row[0] for row in db.query(Panorama.id).filter(Panorama.video_id == video.id).all()]
@@ -110,7 +202,40 @@ def process_video_task(self, video_id: int) -> None:
             db.query(Connection).filter(Connection.to_pano_id.in_(pano_ids), Connection.manual_override.is_(False)).delete(synchronize_session=False)
             db.commit()
 
-        sfm_processor.process_panoramas(db, video.id)
+        sfm_result = sfm_processor.process_panoramas(db, video.id)
+        sfm_positions = _build_sfm_positions(db, video.id, used_fallback=sfm_result.used_fallback)
+        panorama_timestamps = [float(pos["timestamp"]) for pos in sfm_positions]
+        imu_positions = imu_processor.positions_for_timestamps(imu_positions_full, panorama_timestamps) if imu_positions_full else []
+
+        video.status = VideoStatus.FUSING_SENSORS.value
+        db.commit()
+        self.update_state(state="PROGRESS", meta={"stage": "fusing_sensors", "progress": 75})
+
+        if imu_positions:
+            fused_positions = sensor_fusion.fuse_sfm_and_imu(sfm_positions, imu_positions)
+            _apply_fused_positions(db, video.id, fused_positions)
+            logger.info(
+                "Hybrid positioning complete for video %s: sfm=%s imu=%s fused=%s",
+                video.id,
+                len(sfm_positions),
+                len(imu_positions),
+                len(fused_positions),
+            )
+        else:
+            logger.warning("No IMU data for video %s; using SfM-only positions", video.id)
+            fused_positions = [
+                {
+                    "timestamp": pos["timestamp"],
+                    "x": pos["x"],
+                    "y": pos["y"],
+                    "orientation": pos["orientation"],
+                    "source": "sfm",
+                    "sfm_confidence": pos.get("confidence", 0.0),
+                }
+                for pos in sfm_positions
+            ]
+
+        _write_positioning_comparison(video.project_id, video.id, sfm_positions, imu_positions, fused_positions)
 
         video.status = VideoStatus.COMPLETED.value
         video.processed_at = datetime.utcnow()
