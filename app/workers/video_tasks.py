@@ -17,6 +17,7 @@ from app.services.sfm_processor import sfm_processor
 from app.services.imu_extractor import imu_extractor
 from app.services.imu_processor import imu_processor
 from app.services.sensor_fusion import sensor_fusion
+from app.services.directional_analyzer import directional_analyzer
 from app.core.config import settings
 from app.workers.celery_app import celery_app
 
@@ -80,6 +81,8 @@ def _write_positioning_comparison(
     sfm_positions: List[Dict],
     imu_positions: List[Dict],
     fused_positions: List[Dict],
+    directional_positions: List[Dict] | None = None,
+    refined_positions: List[Dict] | None = None,
 ) -> None:
     payload = {
         "video_id": video_id,
@@ -87,6 +90,8 @@ def _write_positioning_comparison(
         "sfm_only": sfm_positions,
         "imu_only": imu_positions,
         "fused": fused_positions,
+        "directional": directional_positions or [],
+        "refined": refined_positions or fused_positions,
     }
     object_key = f"{project_id}/{video_id}/positioning_comparison.json"
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
@@ -213,7 +218,6 @@ def process_video_task(self, video_id: int) -> None:
 
         if imu_positions:
             fused_positions = sensor_fusion.fuse_sfm_and_imu(sfm_positions, imu_positions)
-            _apply_fused_positions(db, video.id, fused_positions)
             logger.info(
                 "Hybrid positioning complete for video %s: sfm=%s imu=%s fused=%s",
                 video.id,
@@ -235,7 +239,39 @@ def process_video_task(self, video_id: int) -> None:
                 for pos in sfm_positions
             ]
 
-        _write_positioning_comparison(video.project_id, video.id, sfm_positions, imu_positions, fused_positions)
+        self.update_state(state="PROGRESS", meta={"stage": "directional_refinement", "progress": 88})
+        panoramas: List[Panorama] = (
+            db.query(Panorama)
+            .filter(Panorama.video_id == video.id)
+            .order_by(Panorama.frame_number.asc())
+            .all()
+        )
+        directions = directional_analyzer.analyze_sequential_directions(panoramas)
+        directional_positions = directional_analyzer.refine_positions_from_directions(
+            panoramas,
+            directions,
+            initial_position=fused_positions[0] if fused_positions else None,
+        )
+        directional_positions = directional_analyzer.smooth_positions(directional_positions)
+        refined_positions = directional_analyzer.blend_positioning_methods(fused_positions, directional_positions)
+        refined_positions = directional_analyzer.smooth_positions(refined_positions)
+        _apply_fused_positions(db, video.id, refined_positions)
+        logger.info(
+            "Directional refinement complete for video %s: directions=%s refined=%s",
+            video.id,
+            len(directions),
+            len(refined_positions),
+        )
+
+        _write_positioning_comparison(
+            video.project_id,
+            video.id,
+            sfm_positions,
+            imu_positions,
+            fused_positions,
+            directional_positions,
+            refined_positions,
+        )
 
         video.status = VideoStatus.COMPLETED.value
         video.processed_at = datetime.utcnow()
