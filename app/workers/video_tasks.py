@@ -75,6 +75,37 @@ def _apply_fused_positions(db: Session, video_id: int, fused_positions: List[Dic
     db.commit()
 
 
+def _ensure_sequential_connections(db: Session, panoramas: List[Panorama], links: List[Dict]) -> None:
+    """Ensure every adjacent panorama pair has an automatic connection."""
+    if len(panoramas) < 2:
+        return
+
+    existing = {
+        (row[0], row[1])
+        for row in db.query(Connection.from_pano_id, Connection.to_pano_id)
+        .filter(
+            Connection.from_pano_id.in_([p.id for p in panoramas]),
+            Connection.to_pano_id.in_([p.id for p in panoramas]),
+            Connection.manual_override.is_(False),
+        )
+        .all()
+    }
+    for i in range(len(panoramas) - 1):
+        pair = (panoramas[i].id, panoramas[i + 1].id)
+        confidence = 0.65
+        if i < len(links):
+            confidence = max(0.35, min(1.0, float(links[i].get("confidence", confidence))))
+        if pair in existing:
+            db.query(Connection).filter(
+                Connection.from_pano_id == pair[0],
+                Connection.to_pano_id == pair[1],
+                Connection.manual_override.is_(False),
+            ).update({"confidence": confidence}, synchronize_session=False)
+        else:
+            db.add(Connection(from_pano_id=pair[0], to_pano_id=pair[1], confidence=confidence, manual_override=False))
+    db.commit()
+
+
 def _write_positioning_comparison(
     project_id: int,
     video_id: int,
@@ -83,6 +114,7 @@ def _write_positioning_comparison(
     fused_positions: List[Dict],
     directional_positions: List[Dict] | None = None,
     refined_positions: List[Dict] | None = None,
+    path_links: List[Dict] | None = None,
 ) -> None:
     payload = {
         "video_id": video_id,
@@ -92,6 +124,7 @@ def _write_positioning_comparison(
         "fused": fused_positions,
         "directional": directional_positions or [],
         "refined": refined_positions or fused_positions,
+        "path_links": path_links or [],
     }
     object_key = f"{project_id}/{video_id}/positioning_comparison.json"
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
@@ -246,20 +279,24 @@ def process_video_task(self, video_id: int) -> None:
             .order_by(Panorama.frame_number.asc())
             .all()
         )
-        directions = directional_analyzer.analyze_sequential_directions(panoramas)
-        directional_positions = directional_analyzer.refine_positions_from_directions(
-            panoramas,
-            directions,
-            initial_position=fused_positions[0] if fused_positions else None,
-        )
-        directional_positions = directional_analyzer.smooth_positions(directional_positions)
-        refined_positions = directional_analyzer.blend_positioning_methods(fused_positions, directional_positions)
-        refined_positions = directional_analyzer.smooth_positions(refined_positions)
+        refined_positions, path_links = directional_analyzer.build_accurate_path(panoramas, fused_positions)
+        directional_positions = [
+            {
+                "timestamp": pos.get("timestamp", idx),
+                "x": pos["x"],
+                "y": pos["y"],
+                "orientation": pos.get("orientation", 0.0),
+                "confidence": pos.get("link_confidence", pos.get("confidence", 0.0)),
+                "source": "panorama_link_path",
+            }
+            for idx, pos in enumerate(refined_positions)
+        ]
         _apply_fused_positions(db, video.id, refined_positions)
+        _ensure_sequential_connections(db, panoramas, path_links)
         logger.info(
-            "Directional refinement complete for video %s: directions=%s refined=%s",
+            "Directional refinement complete for video %s: links=%s refined=%s",
             video.id,
-            len(directions),
+            len(path_links),
             len(refined_positions),
         )
 
@@ -271,6 +308,7 @@ def process_video_task(self, video_id: int) -> None:
             fused_positions,
             directional_positions,
             refined_positions,
+            path_links,
         )
 
         video.status = VideoStatus.COMPLETED.value
